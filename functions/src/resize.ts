@@ -17,10 +17,10 @@ export const listener = functions.storage.object().onChange(event => {
   const filePath = event.data.name;
   const fileDir = path.dirname(filePath);
   const fileName = path.basename(filePath);
-  const resizeFilePath = path.normalize(path.join(fileDir, `${F_PREFIX}_${fileName}`));
+  const resizedFilePath = path.normalize(path.join(fileDir, `${F_PREFIX}_${fileName}`));
   const tempLocalFile = path.join(os.tmpdir(), filePath);
   const tempLocalDir = path.dirname(tempLocalFile);
-  const tempLocalThumbFile = path.join(os.tmpdir(), resizeFilePath);
+  const tempLocalResizedFile = path.join(os.tmpdir(), resizedFilePath);
 
   if (event.data.contentType) {
     // Exit if this is triggered on a file that is not an image.
@@ -29,8 +29,8 @@ export const listener = functions.storage.object().onChange(event => {
       return;
     }
 
-    // Exit if the image is already a thumbnail.
-    if (fileName.startsWith(F_PREFIX)) {
+    // Exit if the image is already a thumbnail or crop.
+    if (fileName.startsWith(F_PREFIX) || fileName.startsWith('crop')) {
       console.log('Already resized image.');
       return;
     }
@@ -44,7 +44,7 @@ export const listener = functions.storage.object().onChange(event => {
     // Cloud Storage files.
     const bucket = gcs.bucket(event.data.bucket);
     const file = bucket.file(filePath);
-    const thumbFile = bucket.file(resizeFilePath);
+    const resizedFile = bucket.file(resizedFilePath);
 
     // Create the temp directory where the storage file will be downloaded.
     return mkdirp(tempLocalDir).then(() => {
@@ -53,16 +53,16 @@ export const listener = functions.storage.object().onChange(event => {
     }).then(() => {
       console.log('The file has been downloaded to', tempLocalFile);
       // Generate a resize img using ImageMagick.
-      return spawn('convert', [tempLocalFile, '-resize', '800', tempLocalThumbFile]);
+      return spawn('convert', [tempLocalFile, '-resize', '400', tempLocalResizedFile]);
     }).then(() => {
-      console.log('Thumbnail created at', tempLocalThumbFile);
+      console.log('resized file created at', tempLocalResizedFile);
       // Uploading the Thumbnail.
-      return bucket.upload(tempLocalThumbFile, { destination: resizeFilePath });
+      return bucket.upload(tempLocalResizedFile, { destination: resizedFilePath });
     }).then(() => {
-      console.log('Thumbnail uploaded to Storage at', resizeFilePath);
+      console.log('resized file uploaded to Storage at', resizedFilePath);
       // Once the image has been uploaded delete the local files to free up disk space.
       fs.unlinkSync(tempLocalFile);
-      fs.unlinkSync(tempLocalThumbFile);
+      fs.unlinkSync(tempLocalResizedFile);
       // Get the Signed URLs for the thumbnail and original image.
       const config = {
         action: 'read',
@@ -70,7 +70,7 @@ export const listener = functions.storage.object().onChange(event => {
       };
 
       return Promise.all([
-        thumbFile.getSignedUrl(config),
+        resizedFile.getSignedUrl(config),
         file.getSignedUrl(config)
       ]);
     }).then((results: any) => {
@@ -82,7 +82,11 @@ export const listener = functions.storage.object().onChange(event => {
 
       const key = path.basename(filePath, path.extname(filePath));
       // Add the URLs to the Database
-      return admin.database().ref(`uploads/${key}`).update({ path: fileUrl, resized: resizedFileUrl });
+      return admin.database().ref(`uploads/${key}`).update({
+        path: fileUrl,
+        resized: resizedFileUrl,
+        resizedFilePath,
+      });
     });
   }
 });
